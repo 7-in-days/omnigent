@@ -303,6 +303,8 @@ class GeminiNativeExecutor(Executor):
         if stderr:
             message = f"{message}; stderr tail:\n{stderr}"
         self._proc = None
+        self._session_id = None
+        self._sent_system_prompt = False
         for fut in list(self._pending.values()):
             if not fut.done():
                 fut.set_exception(RuntimeError(message))

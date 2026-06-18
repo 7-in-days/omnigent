@@ -50,13 +50,15 @@ class _FakeProc:
         return self.returncode
 
 
-def test_read_loop_eof_fails_pending_requests() -> None:
-    """If Gemini exits, pending JSON-RPC requests fail immediately."""
+def test_read_loop_eof_fails_pending_requests_and_resets_session_state() -> None:
+    """If Gemini exits, pending requests fail and the next turn creates a new session."""
 
     async def _run() -> None:
         executor = GeminiNativeExecutor()
         proc = _FakeProc(stdout=_FakeStdout([]), returncode=42)
         executor._proc = proc  # type: ignore[attr-defined]
+        executor._session_id = "stale-session"  # type: ignore[attr-defined]
+        executor._sent_system_prompt = True  # type: ignore[attr-defined]
         executor._stderr_tail = ["fatal acp error"]  # type: ignore[attr-defined]
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         executor._pending[1] = future  # type: ignore[attr-defined]
@@ -71,6 +73,33 @@ def test_read_loop_eof_fails_pending_requests() -> None:
         assert "fatal acp error" in str(exc)
         assert executor._pending == {}  # type: ignore[attr-defined]
         assert executor._proc is None  # type: ignore[attr-defined]
+        assert executor._session_id is None  # type: ignore[attr-defined]
+        assert executor._sent_system_prompt is False  # type: ignore[attr-defined]
+
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def _fake_start() -> None:
+            executor._proc = _FakeProc()  # type: ignore[attr-defined]
+
+        async def _fake_request(
+            method: str,
+            params: dict[str, Any],
+            *,
+            timeout: float = 30.0,
+        ) -> dict[str, Any]:
+            del timeout
+            calls.append((method, params))
+            if method == "session/new":
+                return {"sessionId": "fresh-session"}
+            return {}
+
+        executor._start = _fake_start  # type: ignore[method-assign]
+        executor._request = _fake_request  # type: ignore[method-assign]
+
+        await executor._ensure_session(None)  # type: ignore[attr-defined]
+
+        assert [method for method, _params in calls] == ["initialize", "session/new"]
+        assert executor._session_id == "fresh-session"  # type: ignore[attr-defined]
 
     asyncio.run(_run())
 
