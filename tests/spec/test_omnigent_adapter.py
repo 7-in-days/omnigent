@@ -353,6 +353,36 @@ def test_agent_def_to_agent_spec_accepts_claude_harness_alias(tmp_path: Path) ->
     assert spec.executor.config["harness"] == "claude-sdk"
 
 
+@pytest.mark.parametrize(
+    "harness,expected",
+    [
+        ("gemini-native", "gemini-native"),
+        ("native-gemini", "gemini-native"),
+    ],
+)
+def test_agent_def_to_agent_spec_accepts_gemini_native_harness(
+    tmp_path: Path,
+    harness: str,
+    expected: str,
+) -> None:
+    """Gemini native harness declarations validate and aliases canonicalize."""
+    yaml_path = tmp_path / "agent.yaml"
+    yaml_path.write_text(
+        yaml.dump(
+            {
+                "name": "gemini_native_agent",
+                "prompt": "hi",
+                "executor": {"harness": harness},
+            }
+        )
+    )
+
+    spec = load(yaml_path)
+
+    assert spec.executor.type == OMNIGENT_EXECUTOR_TYPE
+    assert spec.executor.config["harness"] == expected
+
+
 def test_agent_def_to_agent_spec_executor_block(
     executor_block_yaml: Path,
 ) -> None:

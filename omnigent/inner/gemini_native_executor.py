@@ -45,6 +45,7 @@ class GeminiNativeExecutor(Executor):
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
         self._client_request_tasks: set[asyncio.Task[None]] = set()
+        self._stderr_tail: list[str] = []
         self._next_id = 1
         self._pending: dict[int | str, asyncio.Future[JsonDict]] = {}
         self._updates: asyncio.Queue[JsonDict] = asyncio.Queue()
@@ -135,7 +136,6 @@ class GeminiNativeExecutor(Executor):
 
         assert self._session_id is not None
         prompt = _build_prompt(prompt_text, system_prompt, first_turn=not self._sent_system_prompt)
-        self._sent_system_prompt = True
         request_id = self._allocate_id()
         prompt_task = asyncio.create_task(
             self._request_with_id(
@@ -145,6 +145,7 @@ class GeminiNativeExecutor(Executor):
             )
         )
         self._active_prompt_id = request_id
+        update_task: asyncio.Task[JsonDict] | None = None
         try:
             while True:
                 update_task = asyncio.create_task(self._updates.get())
@@ -166,6 +167,7 @@ class GeminiNativeExecutor(Executor):
                 if stop_reason == "cancelled":
                     yield TurnCancelled()
                 else:
+                    self._sent_system_prompt = True
                     yield TurnComplete(response=None, usage=usage)
                 return
         except asyncio.CancelledError:
@@ -175,38 +177,50 @@ class GeminiNativeExecutor(Executor):
             yield ExecutorError(message=f"Gemini native turn failed: {exc}")
         finally:
             self._active_prompt_id = None
+            if not prompt_task.done():
+                prompt_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await prompt_task
+            if update_task is not None and not update_task.done():
+                update_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await update_task
 
     async def _ensure_session(self, config: ExecutorConfig | None) -> None:
-        async with self._start_lock:
-            if self._proc is None:
-                await self._start()
-                await self._request(
-                    "initialize",
-                    {
-                        "protocolVersion": 1,
-                        "clientCapabilities": {
-                            "fs": {"readTextFile": True, "writeTextFile": True},
-                            "terminal": True,
-                        },
-                        "clientInfo": {"name": "omnigent-gemini-native", "version": "0.1.0"},
-                    },
-                )
-            if self._session_id is None:
-                result = await self._request(
-                    "session/new",
-                    {"cwd": str(self._cwd), "mcpServers": []},
-                )
-                session_id = result.get("sessionId")
-                if not isinstance(session_id, str) or not session_id:
-                    raise RuntimeError(f"session/new returned no sessionId: {result!r}")
-                self._session_id = session_id
-            if config is not None and config.model:
-                with contextlib.suppress(Exception):
+        try:
+            async with self._start_lock:
+                if self._proc is None:
+                    await self._start()
                     await self._request(
-                        "session/set_model",
-                        {"sessionId": self._session_id, "modelId": config.model},
-                        timeout=10.0,
+                        "initialize",
+                        {
+                            "protocolVersion": 1,
+                            "clientCapabilities": {
+                                "fs": {"readTextFile": True, "writeTextFile": True},
+                                "terminal": True,
+                            },
+                            "clientInfo": {"name": "omnigent-gemini-native", "version": "0.1.0"},
+                        },
                     )
+                if self._session_id is None:
+                    result = await self._request(
+                        "session/new",
+                        {"cwd": str(self._cwd), "mcpServers": []},
+                    )
+                    session_id = result.get("sessionId")
+                    if not isinstance(session_id, str) or not session_id:
+                        raise RuntimeError(f"session/new returned no sessionId: {result!r}")
+                    self._session_id = session_id
+                if config is not None and config.model:
+                    with contextlib.suppress(Exception):
+                        await self._request(
+                            "session/set_model",
+                            {"sessionId": self._session_id, "modelId": config.model},
+                            timeout=10.0,
+                        )
+        except Exception:
+            await self.aclose()
+            raise
 
     async def _start(self) -> None:
         try:
@@ -229,37 +243,40 @@ class GeminiNativeExecutor(Executor):
 
     async def _read_loop(self) -> None:
         assert self._proc is not None and self._proc.stdout is not None
-        while True:
-            raw = await self._proc.stdout.readline()
-            if not raw:
-                break
-            try:
-                msg = cast(JsonDict, json.loads(raw.decode("utf-8")))
-            except json.JSONDecodeError:
-                _logger.warning("Ignoring non-JSON Gemini ACP line: %r", raw)
-                continue
-            if "id" in msg and "method" in msg:
-                task = asyncio.create_task(self._handle_client_request(msg))
-                self._client_request_tasks.add(task)
-                task.add_done_callback(self._client_request_tasks.discard)
-            elif "id" in msg:
-                request_id = msg["id"]
-                fut = self._pending.pop(request_id, None)
-                if fut is not None and not fut.done():
-                    if "error" in msg:
-                        error = msg["error"]
-                        if isinstance(error, dict):
-                            message = error.get("message", error)
+        try:
+            while True:
+                raw = await self._proc.stdout.readline()
+                if not raw:
+                    break
+                try:
+                    msg = cast(JsonDict, json.loads(raw.decode("utf-8")))
+                except json.JSONDecodeError:
+                    _logger.warning("Ignoring non-JSON Gemini ACP line: %r", raw)
+                    continue
+                if "id" in msg and "method" in msg:
+                    task = asyncio.create_task(self._handle_client_request(msg))
+                    self._client_request_tasks.add(task)
+                    task.add_done_callback(self._client_request_tasks.discard)
+                elif "id" in msg:
+                    request_id = msg["id"]
+                    fut = self._pending.pop(request_id, None)
+                    if fut is not None and not fut.done():
+                        if "error" in msg:
+                            error = msg["error"]
+                            if isinstance(error, dict):
+                                message = error.get("message", error)
+                            else:
+                                message = error
+                            fut.set_exception(RuntimeError(str(message)))
                         else:
-                            message = error
-                        fut.set_exception(RuntimeError(str(message)))
-                    else:
-                        fut.set_result(msg.get("result") or {})
-            elif msg.get("method") == "session/update":
-                params = msg.get("params") or {}
-                update = params.get("update") if isinstance(params, dict) else None
-                if isinstance(update, dict):
-                    self._updates.put_nowait(cast(JsonDict, update))
+                            fut.set_result(msg.get("result") or {})
+                elif msg.get("method") == "session/update":
+                    params = msg.get("params") or {}
+                    update = params.get("update") if isinstance(params, dict) else None
+                    if isinstance(update, dict):
+                        self._updates.put_nowait(cast(JsonDict, update))
+        finally:
+            await self._fail_pending_after_exit()
 
     async def _stderr_log_loop(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -267,7 +284,29 @@ class GeminiNativeExecutor(Executor):
             raw = await self._proc.stderr.readline()
             if not raw:
                 return
-            _logger.debug("gemini --acp stderr: %s", raw.decode("utf-8", "replace").rstrip())
+            line = raw.decode("utf-8", "replace").rstrip()
+            self._stderr_tail.append(line)
+            del self._stderr_tail[:-20]
+            _logger.debug("gemini --acp stderr: %s", line)
+
+    async def _fail_pending_after_exit(self) -> None:
+        proc = self._proc
+        if proc is None:
+            return
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        exit_code = proc.returncode
+        stderr = "\n".join(line for line in self._stderr_tail if line)
+        message = "gemini --acp exited"
+        if exit_code is not None:
+            message = f"{message} with exit code {exit_code}"
+        if stderr:
+            message = f"{message}; stderr tail:\n{stderr}"
+        self._proc = None
+        for fut in list(self._pending.values()):
+            if not fut.done():
+                fut.set_exception(RuntimeError(message))
+        self._pending.clear()
 
     async def _request(
         self,
@@ -314,9 +353,9 @@ class GeminiNativeExecutor(Executor):
             if method == "session/request_permission":
                 result = _approve_permission(params)
             elif method == "fs/read_text_file":
-                result = _read_text_file(params)
+                result = await _read_text_file(params)
             elif method == "fs/write_text_file":
-                result = _write_text_file(params)
+                result = await _write_text_file(params)
             elif method == "terminal/create":
                 result = await self._terminal_create(params)
             elif method == "terminal/output":
@@ -471,7 +510,7 @@ def _tool_name(update: JsonDict) -> str:
 
 def _approve_permission(params: JsonDict) -> JsonDict:
     options = params.get("options")
-    option_id = "proceed_once"
+    option_id: str | None = None
     if isinstance(options, list):
         for option in options:
             if isinstance(option, dict) and option.get("kind") == "allow_once":
@@ -479,26 +518,47 @@ def _approve_permission(params: JsonDict) -> JsonDict:
                 if isinstance(raw, str):
                     option_id = raw
                     break
+        if option_id is None:
+            for option in options:
+                if isinstance(option, dict) and option.get("kind") != "reject_once":
+                    raw = option.get("optionId")
+                    if isinstance(raw, str):
+                        option_id = raw
+                        break
+        if option_id is None:
+            for option in options:
+                if isinstance(option, dict):
+                    raw = option.get("optionId")
+                    if isinstance(raw, str):
+                        option_id = raw
+                        break
+    if option_id is None:
+        return {"outcome": {"outcome": "cancelled"}}
     return {"outcome": {"outcome": "selected", "optionId": option_id}}
 
 
-def _read_text_file(params: JsonDict) -> JsonDict:
+async def _read_text_file(params: JsonDict) -> JsonDict:
     path = Path(str(params["path"]))
-    text = path.read_text(encoding="utf-8")
+    text = await asyncio.to_thread(path.read_text, encoding="utf-8")
     line = params.get("line")
     limit = params.get("limit")
     if isinstance(line, int) or isinstance(limit, int):
         lines = text.splitlines(keepends=True)
-        start = line if isinstance(line, int) else 0
+        start = max(line - 1, 0) if isinstance(line, int) else 0
         end = start + limit if isinstance(limit, int) else None
         text = "".join(lines[start:end])
     return {"content": text}
 
 
-def _write_text_file(params: JsonDict) -> JsonDict:
+async def _write_text_file(params: JsonDict) -> JsonDict:
     path = Path(str(params["path"]))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(str(params.get("content") or ""), encoding="utf-8")
+    content = str(params.get("content") or "")
+
+    def _write() -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    await asyncio.to_thread(_write)
     return {}
 
 
