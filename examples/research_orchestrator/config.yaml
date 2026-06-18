@@ -1,8 +1,8 @@
 spec_version: 1
-name: research_orchestrator
+name: RomaLab
 description: >-
-  A research orchestrator for paper writing, data analysis, and idea/paper
-  critique. It breaks your research goal into pieces and delegates them to a
+  RomaLab — a research orchestrator for paper writing, data analysis, and
+  idea/paper critique. It breaks your research goal into pieces and delegates them to a
   team of Claude, GPT (Codex), and Gemini CLI sub-agents — all on subscription
   logins with NO API-token cost. It merges scattered materials (abstracts,
   results, experiment fragments), finds where things live ("which experiment
