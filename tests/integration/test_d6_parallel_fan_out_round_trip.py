@@ -288,6 +288,9 @@ def test_sys_terminal_parallel_launches_complete(
     delta: it does not directly assert the old DBOS ``function_id`` child
     workflow race because that legacy task surface is gone.
     """
+    if mock_llm_server_url is None:
+        pytest.skip("requires the mock LLM server (mock mode)")
+
     _agent_name, session_id, model_name = terminal_mock_agent
     call_ids = [f"call_terminal_{idx}_{uuid.uuid4().hex[:6]}" for idx in range(_TERMINAL_COUNT)]
     configure_mock_llm(
