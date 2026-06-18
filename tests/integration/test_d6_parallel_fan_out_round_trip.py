@@ -23,10 +23,12 @@ The two paths are intentionally separate:
   output, then posts all outputs from separate worker threads. That is the
   strongest deterministic sessions-layer proxy for client-tool fan-out:
   multiple call IDs are simultaneously in flight and all outputs round-trip
-  to a clean ``response.completed`` terminal. The old e2e also measured
-  SDK-local tool-body wall-clock overlap; this mock server-side test does
-  not execute real client Python tool bodies, so it does not assert that
-  SDK ``asyncio.to_thread`` behavior.
+  to a clean ``response.completed`` terminal. The proof is ordering-based,
+  not timing-based: the test snapshots the set of parked call IDs before
+  any ``function_call_output`` is posted. The old e2e also measured SDK-local
+  tool-body wall-clock overlap; this mock server-side test does not execute
+  real client Python tool bodies, so it does not assert that SDK
+  ``asyncio.to_thread`` behavior.
 
 Runs in mock mode (no ``--llm-api-key``) using the same
 ``configure_mock_llm`` / sessions helpers as the D6 cancel round-trip
@@ -41,6 +43,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -73,6 +76,7 @@ _COMPUTE_TOOL: dict[str, Any] = {
 
 _TERMINAL_COUNT = 10
 _FAN_OUT = 3
+_POST_THREAD_TIMEOUT_S = 30
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +165,43 @@ def _function_call_outputs_for(
     ]
 
 
+def _terminal_resources_for(client: httpx.Client, session_id: str) -> list[dict[str, Any]]:
+    """Return terminal resources for a session."""
+    resp = client.get(f"/v1/sessions/{session_id}/resources/terminals")
+    resp.raise_for_status()
+    payload = resp.json()
+    data = payload.get("data", [])
+    assert isinstance(data, list), f"unexpected terminal resource payload: {payload!r}"
+    return data
+
+
+def _cleanup_terminal_resources(client: httpx.Client, session_id: str) -> None:
+    """Close all terminal resources owned by a session and assert they are gone."""
+    errors: list[str] = []
+    socket_paths: list[Path] = []
+    for resource in _terminal_resources_for(client, session_id):
+        metadata = resource.get("metadata")
+        if isinstance(metadata, dict) and isinstance(metadata.get("tmux_socket"), str):
+            socket_paths.append(Path(metadata["tmux_socket"]))
+        resource_id = resource.get("id")
+        if not isinstance(resource_id, str) or not resource_id:
+            errors.append(f"terminal resource missing id: {resource!r}")
+            continue
+        resp = client.delete(f"/v1/sessions/{session_id}/resources/terminals/{resource_id}")
+        if resp.status_code not in (200, 202, 204, 404):
+            errors.append(
+                f"delete terminal {resource_id!r} failed: {resp.status_code} {resp.text[:300]}"
+            )
+
+    remaining = _terminal_resources_for(client, session_id)
+    lingering_sockets = [str(path) for path in socket_paths if path.exists()]
+    assert not remaining and not lingering_sockets and not errors, (
+        f"terminal cleanup failed for session {session_id}: "
+        f"errors={errors!r}, remaining={remaining!r}, "
+        f"lingering_sockets={lingering_sockets!r}"
+    )
+
+
 def _post_in_thread(
     target: Callable[[], None],
     errors: list[Exception],
@@ -186,7 +227,7 @@ def terminal_mock_agent(
     model_name: str,
     request: pytest.FixtureRequest,
     mock_llm_server_url: str | None,
-) -> tuple[str, str, str]:
+) -> Iterator[tuple[str, str, str]]:
     """Register a mock-LLM agent with ``sys_terminal_*`` tools enabled."""
     if mock_llm_server_url is None:
         pytest.skip("requires the mock LLM server (mock mode)")
@@ -225,7 +266,10 @@ def terminal_mock_agent(
         agent_name=agent_name,
         runner_id=live_runner_id,
     )
-    return agent_name, session_id, model_name
+    try:
+        yield agent_name, session_id, model_name
+    finally:
+        _cleanup_terminal_resources(http_client, session_id)
 
 
 def test_sys_terminal_parallel_launches_complete(
@@ -244,9 +288,6 @@ def test_sys_terminal_parallel_launches_complete(
     delta: it does not directly assert the old DBOS ``function_id`` child
     workflow race because that legacy task surface is gone.
     """
-    if mock_llm_server_url is None:
-        pytest.skip("requires the mock LLM server (mock mode)")
-
     _agent_name, session_id, model_name = terminal_mock_agent
     call_ids = [f"call_terminal_{idx}_{uuid.uuid4().hex[:6]}" for idx in range(_TERMINAL_COUNT)]
     configure_mock_llm(
@@ -302,7 +343,15 @@ def test_sys_terminal_parallel_launches_complete(
     successful = 0
     for output in outputs:
         assert output, f"terminal launch produced an empty output: {outputs!r}"
-        parsed = json.loads(output)
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise AssertionError(
+                f"sys_terminal_launch output was not valid JSON: {output!r}"
+            ) from exc
+        assert isinstance(parsed, dict), (
+            f"sys_terminal_launch output decoded to non-object JSON: {output!r}"
+        )
         if parsed.get("status") in {"launched", "already_running"}:
             successful += 1
     assert successful == _TERMINAL_COUNT, (
@@ -360,7 +409,7 @@ def test_client_tool_outputs_fan_out_and_round_trip_in_parallel(
     errors: list[Exception] = []
     posted_threads: list[threading.Thread] = []
     pending_calls: dict[str, dict[str, Any]] = {}
-    pending_observed_at: dict[str, float] = {}
+    parked_snapshot: tuple[str, ...] | None = None
     text_chunks: list[str] = []
     status: str | None = None
 
@@ -406,9 +455,10 @@ def test_client_tool_outputs_fan_out_and_round_trip_in_parallel(
                         and item.get("status") == "action_required"
                     ):
                         call_id = item["call_id"]
-                        pending_calls[call_id] = item
-                        pending_observed_at[call_id] = time.monotonic()
+                        if not posted_outputs:
+                            pending_calls[call_id] = item
                         if len(pending_calls) == _FAN_OUT and not posted_outputs:
+                            parked_snapshot = tuple(sorted(pending_calls))
                             posted_outputs = True
                             for value in values:
                                 posted_threads.append(
@@ -431,7 +481,11 @@ def test_client_tool_outputs_fan_out_and_round_trip_in_parallel(
                     break
 
     for thread in posted_threads:
-        thread.join(timeout=5)
+        thread.join(timeout=_POST_THREAD_TIMEOUT_S)
+        assert not thread.is_alive(), (
+            f"posting thread {thread.name!r} did not finish within "
+            f"{_POST_THREAD_TIMEOUT_S}s; output may have been dropped"
+        )
     if errors:
         raise errors[0]
 
@@ -439,13 +493,13 @@ def test_client_tool_outputs_fan_out_and_round_trip_in_parallel(
         f"Expected client-tool fan-out turn to complete, got {status!r}; "
         f"text={''.join(text_chunks)!r}, pending={pending_calls!r}"
     )
-    assert set(pending_calls) == set(call_ids.values()), (
-        f"Expected all {_FAN_OUT} compute calls to be simultaneously parked "
-        f"before posting outputs. Saw {pending_calls!r}; expected {call_ids!r}."
+    assert parked_snapshot is not None, (
+        f"Expected all {_FAN_OUT} compute calls to park before posting outputs. "
+        f"Saw {pending_calls!r}; expected {call_ids!r}."
     )
-    assert max(pending_observed_at.values()) - min(pending_observed_at.values()) < 2.0, (
-        f"Expected one assistant response to park all client calls in a tight batch; "
-        f"observed times={pending_observed_at!r}"
+    assert set(parked_snapshot) == set(call_ids.values()), (
+        f"Expected all {_FAN_OUT} compute calls to be simultaneously parked "
+        f"before posting outputs. Saw snapshot {parked_snapshot!r}; expected {call_ids!r}."
     )
 
     final_text = "".join(text_chunks)
