@@ -86,8 +86,8 @@ def test_no_credentials_detected(clean_env) -> None:
         ),
         (
             "GEMINI_API_KEY",
-            # Gemini has no omnigent harness family yet → family None.
-            DetectedProvider(name="gemini", kind="key", family=None, source="$GEMINI_API_KEY"),
+            # Gemini now has a CLI harness surface; keep env keys routable too.
+            DetectedProvider(name="gemini", kind="key", family="openai", source="$GEMINI_API_KEY"),
         ),
     ],
 )
@@ -235,6 +235,47 @@ def test_codex_auth_without_credential_not_detected(clean_env, auth_json: str) -
     cred_dir.mkdir()
     (cred_dir / "auth.json").write_text(auth_json, encoding="utf-8")
     # No codex detection at all — empty list (nothing else is configured).
+    assert detect_providers() == []
+
+
+@pytest.mark.parametrize(
+    "oauth_json",
+    [
+        '{"access_token": "at-real", "refresh_token": ""}',
+        '{"access_token": "", "refresh_token": "rt-real"}',
+    ],
+)
+def test_gemini_cli_login_detected(clean_env, oauth_json: str) -> None:
+    """A ``~/.gemini/oauth_creds.json`` carrying OAuth tokens is detected."""
+    cred_dir = clean_env / ".gemini"
+    cred_dir.mkdir()
+    (cred_dir / "oauth_creds.json").write_text(oauth_json, encoding="utf-8")
+    detected = detect_providers()
+    assert detected == [
+        DetectedProvider(
+            name="gemini",
+            kind="subscription",
+            family="openai",
+            source="gemini CLI login",
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "oauth_json",
+    [
+        "{}",
+        '{"access_token": "", "refresh_token": ""}',
+        '{"access_token": null, "refresh_token": null}',
+        "not json at all",
+        "[1, 2, 3]",
+    ],
+)
+def test_gemini_oauth_without_credential_not_detected(clean_env, oauth_json: str) -> None:
+    """A Gemini OAuth file with no usable token is not detected."""
+    cred_dir = clean_env / ".gemini"
+    cred_dir.mkdir()
+    (cred_dir / "oauth_creds.json").write_text(oauth_json, encoding="utf-8")
     assert detect_providers() == []
 
 

@@ -72,13 +72,12 @@ _OLLAMA_PROBE_TIMEOUT = 0.25
 # Providers absent here (or mapped to ``None``) are reported with
 # ``family=None`` — their key is detected but no harness surface is
 # implied. Anthropic serves the ``anthropic`` surface; OpenAI and
-# OpenAI-compatible gateways (OpenRouter) serve the ``openai`` surface;
-# Gemini has no omnigent harness family yet, so ``None``.
+# OpenAI-compatible gateways (OpenRouter) serve the ``openai`` surface.
 _ENV_KEY_FAMILY: dict[str, str | None] = {
     "anthropic": ANTHROPIC_FAMILY,
     "openai": OPENAI_FAMILY,
     "openrouter": OPENAI_FAMILY,
-    "gemini": None,
+    "gemini": OPENAI_FAMILY,
 }
 
 
@@ -136,6 +135,11 @@ def _codex_auth_path() -> Path:
     :returns: Path to ``~/.codex/auth.json``.
     """
     return Path(os.path.expanduser("~")) / ".codex" / "auth.json"
+
+
+def _gemini_oauth_path() -> Path:
+    """Return the path to the Gemini CLI's stored OAuth credentials."""
+    return Path(os.path.expanduser("~")) / ".gemini" / "oauth_creds.json"
 
 
 def codex_auth_has_credential(auth_path: Path) -> bool:
@@ -200,6 +204,31 @@ def codex_auth_has_credential(auth_path: Path) -> bool:
     personal_access_token = data.get("personal_access_token")
     if isinstance(personal_access_token, str) and personal_access_token.strip():
         return True
+    return False
+
+
+def gemini_oauth_has_credential(oauth_path: Path) -> bool:
+    """Return whether a Gemini CLI OAuth file carries a usable login.
+
+    Gemini CLI's subscription/OAuth login is stored in
+    ``~/.gemini/oauth_creds.json`` with ``access_token`` and
+    ``refresh_token`` fields. A refresh token is enough because the CLI can
+    mint a fresh access token when the current one expires.
+    """
+    try:
+        raw = oauth_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    for field in ("access_token", "refresh_token"):
+        value = data.get(field)
+        if isinstance(value, str) and value.strip():
+            return True
     return False
 
 
@@ -554,7 +583,9 @@ def detect_providers() -> list[DetectedProvider]:
        resolution (config.toml's default provider beats auth.json).
     4. A logged-in Codex CLI (``~/.codex/auth.json`` exists *and* carries a
        usable credential — see :func:`codex_auth_has_credential`).
-    5. A reachable local Ollama (``localhost:11434`` TCP-connectable).
+    5. A logged-in Gemini CLI (``~/.gemini/oauth_creds.json`` carries OAuth
+       tokens usable by ``gemini --acp``).
+    6. A reachable local Ollama (``localhost:11434`` TCP-connectable).
 
     No network I/O is performed except the single Ollama probe (see
     :func:`_ollama_reachable`). On macOS, a ``claude auth status`` subprocess
@@ -625,7 +656,19 @@ def detect_providers() -> list[DetectedProvider]:
             )
         )
 
-    # 5. Local Ollama.
+    # 5. Gemini CLI OAuth login. This is intentionally subscription-login
+    # detection; a Gemini API key is handled by the environment-key pass above.
+    if gemini_oauth_has_credential(_gemini_oauth_path()):
+        detected.append(
+            DetectedProvider(
+                name="gemini",
+                kind=SUBSCRIPTION_KIND,
+                family=OPENAI_FAMILY,
+                source="gemini CLI login",
+            )
+        )
+
+    # 6. Local Ollama.
     if _ollama_reachable():
         detected.append(
             DetectedProvider(
