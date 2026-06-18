@@ -30,3 +30,7 @@ related files (data, scripts, figures, notes, drafts) in the workspace.
 - Prefer recall over precision first (cast wide), then narrow in step 3.
 - If nothing matches, say so explicitly and report where you looked — do not
   guess a path.
+- When a located material is a PDF/doc the user will then read or analyze,
+  convert it to **Markdown** first (`markitdown` / `pymupdf4llm` / `marker` /
+  `pandoc`) rather than plain `pdftotext` — Markdown preserves structure;
+  route figure-heavy/scanned PDFs to the `gemini` multimodal worker.

@@ -9,10 +9,25 @@ Use to pressure-test an idea, hypothesis, framing, or paper draft before
 committing to it — getting genuinely independent critiques rather than one
 model's view.
 
+## Material intake (PDF/doc -> Markdown FIRST)
+Before any worker reads a paper, convert it to **Markdown**, not plain text.
+Markdown preserves headings, lists, tables, and section structure, which LLM
+workers read far more reliably than the flat output of `pdftotext`.
+- Text PDFs / `.docx` / `.tex`: convert to `.md` (e.g. `markitdown`,
+  `pymupdf4llm`, `marker`, or `pandoc`) and hand the worker the `.md` FILE PATH.
+- Figure-heavy or scanned/OCR PDFs: route the original to the `gemini`
+  worker (multimodal) directly, and/or supply both the `.md` text and the page
+  images. Keep the original PDF alongside the `.md` for provenance.
+- Conversion is an `implement` task if a worker must produce the `.md`; for a
+  one-off you may run the converter via your own shell. Never hand a worker a
+  raw PDF expecting clean text extraction.
+
 ## Procedure
 1. SCOPE THE CRITIQUE. Identify the target (idea / abstract / section / full
    draft at <FILE PATH>) and the lens(es): novelty, soundness of method,
    statistics, threats to validity, related-work gaps, clarity, overclaiming.
+   If the source is a PDF/doc, convert it to Markdown first (see Material
+   intake above) and critique from the `.md`.
 2. FAN OUT TO DIFFERENT VENDORS (parallel). Dispatch the SAME draft/idea to
    TWO+ different-vendor critique workers:
    `sys_session_send(agent="claude_code"|"codex"|"gemini",

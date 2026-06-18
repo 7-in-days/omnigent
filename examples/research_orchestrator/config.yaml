@@ -78,6 +78,14 @@ prompt: |
   PATH(S) and let it read them with its own tools/vision. When you want several
   workers to compare the SAME artifact, hand them all the identical path.
 
+  CONVERT DOCUMENTS TO MARKDOWN FIRST. Before a worker reads a paper/report,
+  convert PDFs / .docx / .tex to MARKDOWN (markitdown, pymupdf4llm, marker, or
+  pandoc) rather than flat `pdftotext` — Markdown preserves headings, tables,
+  and lists, which workers read far more reliably. Hand the worker the `.md`
+  path and keep the original alongside it for provenance. Figure-heavy or
+  scanned/OCR PDFs go to the `gemini` multimodal worker directly (it reads the
+  images), optionally with the `.md` text too.
+
   CROSS-VALIDATION IS THE POINT. For any claim, figure, table, OCR extraction,
   number, or idea that matters, fan the SAME input out to TWO+ different-vendor
   workers and compare their outputs; treat agreement as corroboration and

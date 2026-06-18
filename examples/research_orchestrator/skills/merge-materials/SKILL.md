@@ -22,9 +22,14 @@ clean structure or one document.
    different subtrees and merge their inventories.
 3. EXTRACT / NORMALIZE (delegate, analyze). For each cluster, dispatch an
    analyze worker to pull the salient content (key claims, numbers, figure/table
-   captions, method notes) with citations (file path + page/section). Send
-   figures/scans to the `gemini` worker (multimodal). Pass FILE PATHS, never
-   attachments.
+   captions, method notes) with citations (file path + page/section). Pass FILE
+   PATHS, never attachments.
+   - CONVERT FIRST: turn PDFs/`.docx`/`.tex` into **Markdown** (not plain
+     `pdftotext`) before a worker reads them — Markdown keeps headings, tables,
+     and lists intact. Tools: `markitdown` / `pymupdf4llm` / `marker` /
+     `pandoc`. Hand the worker the `.md` path; keep the original for provenance.
+   - Send figures/scans/image-heavy PDFs to the `gemini` worker (multimodal)
+     directly.
 4. SYNTHESIZE (orchestrator, non-code authoring). YOU assemble the merged
    document or folder README from the workers' structured extracts — this is
    prose authoring you do directly. Preserve provenance: every merged item
