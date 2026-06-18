@@ -1,8 +1,8 @@
-# research_orchestrator — lab setup guide
+# RomaLab — lab research orchestrator setup guide
 
-A multi-agent research orchestrator (paper writing, data analysis, idea/paper
-critique) that delegates to **Claude + GPT (Codex) + Gemini** sub-agents —
-all on **subscription-login CLIs with NO API-token cost**.
+**RomaLab** is a multi-agent research orchestrator (paper writing, data
+analysis, idea/paper critique) that delegates to **Claude + GPT (Codex) +
+Gemini** sub-agents — all on **subscription-login CLIs with NO API-token cost**.
 
 Because the `gemini-native` harness is not yet in upstream/PyPI omnigent, each
 person installs from **this fork**. omnigent is Apache-2.0 licensed, so
@@ -31,8 +31,8 @@ command -v claude codex gemini
 
 # 5) Get the bundle and run it.
 mkdir -p ~/omnigent-agents
-tar -xzf research_orchestrator.tar.gz -C ~/omnigent-agents
-omnigent run ~/omnigent-agents/research_orchestrator
+tar -xzf RomaLab.tar.gz -C ~/omnigent-agents
+omnigent run ~/omnigent-agents/RomaLab
 ```
 
 ## Notes
