@@ -60,6 +60,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
@@ -70,8 +71,31 @@ from tests.e2e.conftest import (
     create_runner_bound_session,
     poll_session_until_terminal,
     register_inline_agent,
+    reset_mock_llm,
     send_user_message_to_session,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_mock_llm(mock_llm_server_url: str | None) -> Iterator[None]:
+    """Keep this file's keyed mock queues from leaking across the shard.
+
+    The mock LLM server is session-scoped and shared by every test in
+    the integration-mock shard. These tests script terminal tool-call
+    queues keyed by the agent model name; without an explicit reset the
+    leftover/unconsumed scripted responses stay in the shared server and
+    a later sibling test (``test_smoke`` / ``test_multi_turn`` /
+    ``test_sharing``) consumes them instead of its own scripted marker —
+    surfacing as a ``"Mock LLM response"`` default echo. Reset before and
+    after each test so neither this file's queues nor a half-drained
+    queue from a prior run leaks in either direction. Mirrors the fix
+    PR #592 applied to ``test_d6_parallel_fan_out_round_trip.py``.
+    """
+    reset_mock_llm(mock_llm_server_url)
+    try:
+        yield
+    finally:
+        reset_mock_llm(mock_llm_server_url)
 
 
 def _list_session_items(client: httpx.Client, session_id: str) -> list[dict[str, Any]]:
