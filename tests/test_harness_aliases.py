@@ -12,6 +12,7 @@ from omnigent.harness_aliases import canonicalize_harness, is_native_harness
     [
         ("claude", "claude-sdk"),
         ("native-pi", "pi-native"),
+        ("native-gemini", "gemini-native"),
         # Docs / runtime-dispatch spelling of the openai-agents harness;
         # specs and OMNIGENT_HARNESSES use "openai-agents".
         ("openai-agents-sdk", "openai-agents"),
@@ -45,8 +46,10 @@ def test_canonicalize_harness(alias: str | None, canonical: str | None) -> None:
         # Canonical native spellings and their reversed forms.
         ("claude-native", True),
         ("codex-native", True),
+        ("gemini-native", True),
         ("native-claude", True),
         ("native-codex", True),
+        ("native-gemini", True),
         ("pi-native", True),
         ("native-pi", True),
         # SDK harnesses are NOT native — they replay the Omnigent

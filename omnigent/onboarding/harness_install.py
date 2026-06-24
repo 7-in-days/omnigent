@@ -52,6 +52,10 @@ PI_KEY = "pi"
 # installer rather than npm — so it carries an ``install_hint``, not a ``package``.
 CURSOR_KEY = "cursor"
 
+# Gemini native uses the Google Gemini CLI in ACP mode. It authenticates via
+# the CLI's own OAuth/subscription login, not a Gemini API key.
+GEMINI_KEY = "gemini"
+
 
 @dataclass(frozen=True)
 class HarnessInstallSpec:
@@ -124,6 +128,12 @@ _HARNESS_INSTALL: dict[str, HarnessInstallSpec] = {
         install_hint="curl https://cursor.com/install -fsS | bash",
         login_status_key="isAuthenticated",
     ),
+    GEMINI_KEY: HarnessInstallSpec(
+        "Gemini",
+        "gemini",
+        "@google/gemini-cli",
+        login_args=("login",),
+    ),
 }
 
 
@@ -140,6 +150,7 @@ _HARNESS_INSTALL: dict[str, HarnessInstallSpec] = {
 _HARNESS_NAME_TO_KEY: dict[str, str] = {
     "claude-native": ANTHROPIC_FAMILY,
     "codex-native": OPENAI_FAMILY,
+    "gemini-native": GEMINI_KEY,
     PI_KEY: PI_KEY,
     "pi-native": PI_KEY,
 }

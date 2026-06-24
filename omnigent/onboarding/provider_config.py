@@ -132,6 +132,10 @@ _HARNESS_FAMILY: dict[str, str] = {
     # Antigravity is Gemini-native but routes generic-provider traffic over
     # the OpenAI-compatible wire, so it consumes the ``openai`` family.
     "antigravity": OPENAI_FAMILY,
+    # Gemini native is a subscription CLI harness; provider readout uses
+    # the OpenAI family bucket for existing setup UI compatibility.
+    "gemini-native": OPENAI_FAMILY,
+    "native-gemini": OPENAI_FAMILY,
 }
 
 # Executor-type spellings that ``AgentSpec.harness_kind`` returns for SDK
@@ -231,7 +235,8 @@ class ProviderEntry:
 
     - ``key`` / ``gateway`` / ``local`` carry :attr:`families` (and no
       :attr:`cli` / :attr:`profile`).
-    - ``subscription`` carries :attr:`cli` (``"claude"`` / ``"codex"``)
+    - ``subscription`` carries :attr:`cli` (``"claude"`` / ``"codex"`` /
+      ``"gemini"``)
       and no families/base_url — the CLI's own login supplies auth.
     - ``databricks`` carries :attr:`profile` and no families — auth is
       resolved from ``~/.databrickscfg`` + ucode state by the runtime.
@@ -252,8 +257,9 @@ class ProviderEntry:
         lazily by :meth:`family`, so consumers should go through
         :meth:`family` rather than indexing :attr:`families` directly.
     :param cli: For ``kind="subscription"`` and ``kind="cli-config"``: the
-        CLI whose login / config file carries auth, ``"claude"`` or
-        ``"codex"`` (``cli-config`` supports only ``"codex"`` today).
+        CLI whose login / config file carries auth, ``"claude"``,
+        ``"codex"``, or ``"gemini"`` (``cli-config`` supports only
+        ``"codex"`` today).
         ``None`` otherwise.
     :param profile: For ``kind="databricks"`` only: the Databricks profile
         name from ``~/.databrickscfg``, e.g. ``"oss"``. ``None`` otherwise.
@@ -710,16 +716,16 @@ def _parse_provider(name: str, raw: dict[str, object]) -> ProviderEntry:
         cli_raw = raw.get("cli")
         if not isinstance(cli_raw, str) or not cli_raw:
             raise OmnigentError(
-                f"provider {name!r}: a 'cli' (e.g. 'claude' or 'codex') is "
+                f"provider {name!r}: a 'cli' (e.g. 'claude', 'codex', or 'gemini') is "
                 "required when kind is 'subscription'.",
                 code=ErrorCode.INVALID_INPUT,
             )
         # A subscription serves the family its CLI implies (claude→anthropic,
-        # codex→openai); an unknown CLI serves nothing.
+        # codex/gemini→openai); an unknown CLI serves nothing.
         served = (
             {ANTHROPIC_FAMILY}
             if cli_raw == "claude"
-            else ({OPENAI_FAMILY} if cli_raw == "codex" else set())
+            else ({OPENAI_FAMILY} if cli_raw in {"codex", "gemini"} else set())
         )
         return ProviderEntry(
             name=name,
@@ -866,7 +872,7 @@ def provider_families(entry: ProviderEntry) -> frozenset[str]:
     - ``key`` / ``gateway`` / ``local``: the families it declares inline,
       plus the :data:`PI_SURFACE` scope (pi consumes either family).
     - ``subscription`` / ``cli-config``: derived from the CLI — ``claude``
-      serves the ``anthropic`` surface, ``codex`` serves the ``openai``
+      serves the ``anthropic`` surface, ``codex`` / ``gemini`` serve the ``openai``
       surface. Never pi: a CLI login (or a provider pinned in the CLI's
       own config file) is unusable outside its own CLI.
     - ``databricks``: both families plus pi — ucode routes the Claude,
@@ -883,7 +889,7 @@ def provider_families(entry: ProviderEntry) -> frozenset[str]:
     if entry.kind in (SUBSCRIPTION_KIND, CLI_CONFIG_KIND):
         if entry.cli == "claude":
             return frozenset({ANTHROPIC_FAMILY})
-        if entry.cli == "codex":
+        if entry.cli in {"codex", "gemini"}:
             return frozenset({OPENAI_FAMILY})
         return frozenset()
     if entry.kind == DATABRICKS_KIND:
